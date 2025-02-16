@@ -12,7 +12,8 @@ use clap::Subcommand;
 pub use clap::{Parser, ValueEnum};
 use niri_ipc::{Request, Response};
 use niri_multi_socket::MultiSocket;
-use std::{io, os::unix::process::CommandExt, path::PathBuf};
+use regex;
+use std::{ffi::OsString, io, os::unix::process::CommandExt, path::PathBuf};
 
 mod kitty;
 mod niri_multi_socket;
@@ -88,13 +89,20 @@ impl Runner for TestSocket {
 
 /// Run new kitty instance.
 #[derive(Parser, Debug, Clone)]
-pub struct Kitty {}
+pub struct Kitty {
+    /// Optional template of kitty socket
+    ///
+    /// Will accept environment variables in view `${ENV}` and `{pid}` construction
+    /// which will be replaced with pid of target kitty process
+    #[arg(short, long, default_value = "${XDG_RUNTIME_DIR}/kitty-{pid}")]
+    socket: String,
+}
 
 impl Runner for Kitty {
     fn run(self, socket: MultiSocket) {
         let mut res = Err(io::Error::new(io::ErrorKind::Other, ""));
         if let Some(window) = get_focused_window(&socket) {
-            res = run_from_kitty(window);
+            res = self.run_from_kitty(window);
         }
         if res.is_err() {
             run_kitty()
@@ -102,39 +110,59 @@ impl Runner for Kitty {
     }
 }
 
-fn run_kitty() {
-    std::process::Command::new("kitty").exec();
-}
+impl Kitty {
+    fn get_socket(&self, pid: i32) -> io::Result<kitty::KittySocket> {
+        let pidre = regex::Regex::new(r"\{pid\}").unwrap();
+        let envre = regex::Regex::new(r"\$\{([^\{\}\s]*)\}").unwrap();
 
-fn run_from_kitty(window: niri_ipc::Window) -> io::Result<()> {
-    let class = window.app_id;
-    let pid = window.pid;
-    let mut socket = None;
-    if let Some(class) = class {
-        if class == "kitty" {
-            if let Some(pid) = pid {
-                socket = Some(get_kitty_socket(pid)?);
+        let path = envre.replace_all(&self.socket, |caps: &regex::Captures| {
+            let var = std::env::var_os(&caps[1].to_string())
+                .unwrap_or(OsString::from(""));
+            String::from(var.to_str().unwrap())
+        });
+
+        let path = pidre.replace_all(&path, format!("{pid}"));
+
+        println!("Path: {path}");
+
+        kitty::KittySocket::connect(PathBuf::from(path.to_string()))
+    }
+
+    fn run_from_kitty(&self, window: niri_ipc::Window) -> io::Result<()> {
+        let class = window.app_id;
+        let pid = window.pid;
+        let mut socket = None;
+        if let Some(class) = class {
+            if class == "kitty" {
+                if let Some(pid) = pid {
+                    socket = Some(self.get_socket(pid)?);
+                }
             }
         }
-    }
-    if let Some(mut socket) = socket {
-        let r = kitty::Command::Ls(kitty::Ls::default());
-        let r = socket.request(r).unwrap();
-        let windows: Vec<kitty::OsWindow> = serde_json::from_value(r).unwrap();
-        if let Some(window) = get_focused_kitty_window(windows) {
-            let mut r = kitty::Launch::default();
-            r.launch_type = Some(kitty::LaunchType::OsWindow);
-            r.cwd = Some(window.cwd);
-            r.copy_env = Some(true);
-            r.env = Some(vec!["SHLVL=1".into()]);
-            socket.send(kitty::Command::Launch(r))?;
-            Ok(())
+        if let Some(mut socket) = socket {
+            let r = kitty::Command::Ls(kitty::Ls::default());
+            let r = socket.request(r).unwrap();
+            let windows: Vec<kitty::OsWindow> =
+                serde_json::from_value(r).unwrap();
+            if let Some(window) = get_focused_kitty_window(windows) {
+                let mut r = kitty::Launch::default();
+                r.launch_type = Some(kitty::LaunchType::OsWindow);
+                r.cwd = Some(window.cwd);
+                r.copy_env = Some(true);
+                r.env = Some(vec!["SHLVL=1".into()]);
+                socket.send(kitty::Command::Launch(r))?;
+                Ok(())
+            } else {
+                Err(io::Error::new(io::ErrorKind::Other, ""))
+            }
         } else {
             Err(io::Error::new(io::ErrorKind::Other, ""))
         }
-    } else {
-        Err(io::Error::new(io::ErrorKind::Other, ""))
     }
+}
+
+fn run_kitty() {
+    std::process::Command::new("kitty").exec();
 }
 
 fn get_focused_kitty_window(
