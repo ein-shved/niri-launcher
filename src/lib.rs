@@ -10,9 +10,11 @@
 
 use clap::Subcommand;
 pub use clap::{Parser, ValueEnum};
+use niri_ipc::{Request, Response};
 use niri_multi_socket::MultiSocket;
-use std::path::PathBuf;
+use std::{io, os::unix::process::CommandExt, path::PathBuf};
 
+mod kitty;
 mod niri_multi_socket;
 
 /// Top-level arguments structure
@@ -43,6 +45,13 @@ pub enum Command {
     /// unavailable.
     #[command(about, long_about)]
     Test(TestSocket),
+
+    /// Run new kitty instance.
+    ///
+    /// If current focused window have usable environment data (e.g. another kitty
+    /// window) - the newly running window will inherit this environment (e.g. cwd).
+    #[command(about, long_about)]
+    Kitty(Kitty),
 }
 
 /// The trait for subcommand
@@ -61,6 +70,7 @@ impl Args {
         };
         match self.command {
             Command::Test(cmd) => cmd.run(socket),
+            Command::Kitty(cmd) => cmd.run(socket),
         }
     }
 }
@@ -73,5 +83,91 @@ impl Runner for TestSocket {
     fn run(self, socket: MultiSocket) {
         // Will panic if niri socket is unavailable
         socket.get_socket().unwrap();
+    }
+}
+
+/// Run new kitty instance.
+#[derive(Parser, Debug, Clone)]
+pub struct Kitty {}
+
+impl Runner for Kitty {
+    fn run(self, socket: MultiSocket) {
+        let mut res = Err(io::Error::new(io::ErrorKind::Other, ""));
+        if let Some(window) = get_focused_window(&socket) {
+            res = run_from_kitty(window);
+        }
+        if res.is_err() {
+            run_kitty()
+        }
+    }
+}
+
+fn run_kitty() {
+    std::process::Command::new("kitty").exec();
+}
+
+fn run_from_kitty(window: niri_ipc::Window) -> io::Result<()> {
+    let class = window.app_id;
+    let pid = window.pid;
+    let mut socket = None;
+    if let Some(class) = class {
+        if class == "kitty" {
+            if let Some(pid) = pid {
+                socket = Some(get_kitty_socket(pid)?);
+            }
+        }
+    }
+    if let Some(mut socket) = socket {
+        let r = kitty::Command::Ls(kitty::Ls::default());
+        let r = socket.request(r).unwrap();
+        let windows: Vec<kitty::OsWindow> = serde_json::from_value(r).unwrap();
+        if let Some(window) = get_focused_kitty_window(windows) {
+            let mut r = kitty::Launch::default();
+            r.launch_type = Some(kitty::LaunchType::OsWindow);
+            r.cwd = Some(window.cwd);
+            r.copy_env = Some(true);
+            r.env = Some(vec!["SHLVL=1".into()]);
+            socket.send(kitty::Command::Launch(r))?;
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::Other, ""))
+        }
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, ""))
+    }
+}
+
+fn get_focused_kitty_window(
+    windows: Vec<kitty::OsWindow>,
+) -> Option<kitty::Window> {
+    for window in windows {
+        if window.is_focused {
+            for tab in window.tabs {
+                if tab.is_focused {
+                    for window in tab.windows {
+                        if window.is_focused {
+                            return Some(window);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_kitty_socket(pid: i32) -> io::Result<kitty::KittySocket> {
+    kitty::KittySocket::connect(PathBuf::from(format!(
+        "/run/user/1000/kitty-{pid}"
+    )))
+}
+
+fn get_focused_window(socket: &MultiSocket) -> Option<niri_ipc::Window> {
+    if let Response::FocusedWindow(window) =
+        socket.send(Request::FocusedWindow).unwrap().0.unwrap()
+    {
+        window
+    } else {
+        panic!("Unexpected response to FocusedWindow")
     }
 }
