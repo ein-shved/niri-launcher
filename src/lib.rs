@@ -64,7 +64,7 @@ pub enum Command {
 
 impl Launcher {
     /// Run chosen subcommand
-    pub fn run(self) {
+    pub fn run(self) -> io::Result<()> {
         let socket = if let Some(path) = self.path.as_ref() {
             MultiSocket::connect_to(path)
         } else {
@@ -72,22 +72,28 @@ impl Launcher {
         };
         match self.command {
             Command::Test => {
-                socket.get_socket().unwrap();
+                socket.get_socket()?;
+                Ok(())
             }
             Command::Kitty => {
-                self.run_kitty(socket);
+                self.run_kitty(socket)
             }
         }
     }
 
-    fn run_kitty(&self, socket: MultiSocket) {
+    fn run_kitty(&self, socket: MultiSocket) -> io::Result<()> {
         let mut res = Err(io::Error::new(io::ErrorKind::Other, ""));
-        if let Some(window) = Self::get_focused_window(&socket) {
-            res = self.run_from_kitty(window);
+
+        if res.is_err() {
+            if let Some(window) = Self::get_focused_window(&socket) {
+                res = self.run_from_kitty(window);
+            }
         }
         if res.is_err() {
-            Self::run_kitty_fresh()
+            res = Self::run_kitty_fresh()
         }
+
+        res
     }
 
     fn get_socket(&self, pid: i32) -> io::Result<kitty::KittySocket> {
@@ -138,8 +144,8 @@ impl Launcher {
         }
     }
 
-    fn run_kitty_fresh() {
-        std::process::Command::new("kitty").exec();
+    fn run_kitty_fresh() -> io::Result<()> {
+        Err(std::process::Command::new("kitty").exec())
     }
 
     fn get_focused_kitty_window(
