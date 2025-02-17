@@ -41,6 +41,12 @@ pub struct Launcher {
     /// which will be replaced with pid of target kitty process
     #[arg(short, long, default_value = "${XDG_RUNTIME_DIR}/kitty-{pid}")]
     kitty_socket: String,
+
+    /// Whenever to launch tool regardless to current focused window
+    ///
+    /// Launching tool will be run with default cwd withing default environment
+    #[arg(short, long, default_value = "false")]
+    fresh: bool,
 }
 
 /// The list of supported commands
@@ -84,6 +90,11 @@ impl Launcher {
     fn run_kitty(&self, socket: MultiSocket) -> io::Result<()> {
         let mut res = Err(io::Error::new(io::ErrorKind::Other, ""));
 
+        if res.is_err() {
+            if self.fresh {
+                res = Self::run_kitty_fresh();
+            }
+        }
         if res.is_err() {
             if let Some(window) = Self::get_focused_window(&socket) {
                 res = self.run_from_kitty(window);
