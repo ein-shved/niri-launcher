@@ -1,7 +1,7 @@
-use niri_launcher::{Args, Parser};
+use niri_launcher::{Launcher, Parser};
 
 fn main() {
-    let args = Args::parse();
+    let args = Launcher::parse();
 
     args.run();
 }
