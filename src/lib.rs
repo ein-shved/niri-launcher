@@ -13,7 +13,10 @@ pub use clap::{Parser, ValueEnum};
 use niri_ipc::{Request, Response};
 use niri_multi_socket::MultiSocket;
 use regex;
-use std::{ffi::OsString, io, os::unix::process::CommandExt, path::PathBuf};
+use std::{
+    ffi::OsString, fmt::Display, io, iter, os::unix::process::CommandExt,
+    path::PathBuf,
+};
 
 mod kitty;
 mod niri_multi_socket;
@@ -81,9 +84,7 @@ impl Launcher {
                 socket.get_socket()?;
                 Ok(())
             }
-            Command::Kitty => {
-                self.run_kitty(socket)
-            }
+            Command::Kitty => self.run_kitty(socket),
         }
     }
 
@@ -140,13 +141,12 @@ impl Launcher {
             let windows: Vec<kitty::OsWindow> =
                 serde_json::from_value(r).unwrap();
             if let Some(window) = Self::get_focused_kitty_window(windows) {
-                let mut r = kitty::Launch::default();
-                r.launch_type = Some(kitty::LaunchType::OsWindow);
-                r.cwd = Some(window.cwd);
-                r.copy_env = Some(true);
-                r.env = Some(vec!["SHLVL=1".into()]);
-                socket.send(kitty::Command::Launch(r))?;
-                Ok(())
+                let env = window
+                    .env
+                    .into_iter()
+                    .chain(iter::once(("SHLVL".into(), "1".into())));
+
+                Self::run_kitty_intsance(window.cwd.to_str(), Some(env))
             } else {
                 Err(io::Error::new(io::ErrorKind::Other, ""))
             }
@@ -155,8 +155,30 @@ impl Launcher {
         }
     }
 
+    fn run_kitty_intsance(
+        workdir: Option<impl Into<String>>,
+        env: Option<impl Iterator<Item = (impl Display, impl Display)>>,
+    ) -> io::Result<()> {
+        let mut proc = std::process::Command::new("kitty");
+
+        if let Some(env) = env {
+            env.fold(&mut proc, |proc, (name, val)| {
+                proc.arg("-o").arg(format!("env={name}={val}"))
+            });
+        };
+
+        workdir.map(|workdir| {
+            proc.arg("-d").arg(format!("{}", workdir.into()));
+        });
+
+        Err(proc.exec())
+    }
+
     fn run_kitty_fresh() -> io::Result<()> {
-        Err(std::process::Command::new("kitty").exec())
+        Self::run_kitty_intsance(
+            None as Option<String>,
+            None as Option<iter::Empty<(String, String)>>,
+        )
     }
 
     fn get_focused_kitty_window(
