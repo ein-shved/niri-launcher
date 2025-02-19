@@ -69,6 +69,14 @@ pub enum Command {
     /// window) - the newly running window will inherit this environment (e.g. cwd).
     #[command(about, long_about)]
     Kitty,
+
+    /// Print env for launching command.
+    ///
+    /// If current focused window have usable environment data (e.g. kitty
+    /// window) - this will print environment to use with new window. Usable for development
+    /// purposes.
+    #[command(about, long_about)]
+    Env,
 }
 
 impl Launcher {
@@ -85,10 +93,11 @@ impl Launcher {
                 Ok(())
             }
             Command::Kitty => self.run_kitty(socket),
+            Command::Env => self.print_env(socket),
         }
     }
 
-    fn run_kitty(&self, socket: MultiSocket) -> io::Result<()> {
+    fn run_kitty(&self, mut socket: MultiSocket) -> io::Result<()> {
         let mut res = Err(io::Error::new(io::ErrorKind::Other, ""));
 
         if res.is_err() {
@@ -97,15 +106,22 @@ impl Launcher {
             }
         }
         if res.is_err() {
-            if let Some(window) = Self::get_focused_window(&socket) {
-                res = self.run_from_kitty(window);
-            }
+            res = self.run_from_kitty(&mut socket);
         }
         if res.is_err() {
             res = Self::run_kitty_fresh()
         }
 
         res
+    }
+
+    fn print_env(&self, mut socket: MultiSocket) -> io::Result<()> {
+        if let Ok(window) = self.get_kitty_focused_window(&mut socket) {
+            for (name, val) in window.env {
+                println!("{name}=\"{val}\"");
+            }
+        }
+        Ok(())
     }
 
     fn get_socket(&self, pid: i32) -> io::Result<kitty::KittySocket> {
@@ -124,34 +140,46 @@ impl Launcher {
         kitty::KittySocket::connect(PathBuf::from(path.to_string()))
     }
 
-    fn run_from_kitty(&self, window: niri_ipc::Window) -> io::Result<()> {
-        let class = window.app_id;
-        let pid = window.pid;
-        let mut socket = None;
-        if let Some(class) = class {
-            if class == "kitty" {
-                if let Some(pid) = pid {
-                    socket = Some(self.get_socket(pid)?);
-                }
-            }
-        }
-        if let Some(mut socket) = socket {
+    fn run_from_kitty(&self, socket: &mut MultiSocket) -> io::Result<()> {
+        let window = self.get_kitty_focused_window(socket)?;
+        let env = window
+            .env
+            .into_iter()
+            .chain(iter::once(("SHLVL".into(), "1".into())));
+
+        Self::run_kitty_intsance(window.cwd.to_str(), Some(env))
+    }
+
+    fn get_kitty_focused_window(
+        &self,
+        socket: &mut MultiSocket,
+    ) -> io::Result<kitty::Window> {
+        let window = Self::get_focused_window(&socket).ok_or(
+            io::Error::new(io::ErrorKind::NotFound, "No focused niri window"),
+        )?;
+        let class = window.app_id.ok_or(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Focused niri window does not have class",
+        ))?;
+        if class == "kitty" {
+            let pid = window.pid.ok_or(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Focused niri window does not have pid",
+            ))?;
+            let mut socket = self.get_socket(pid)?;
             let r = kitty::Command::Ls(kitty::Ls::default());
-            let r = socket.request(r).unwrap();
+            let r = socket.request(r)?;
             let windows: Vec<kitty::OsWindow> =
                 serde_json::from_value(r).unwrap();
-            if let Some(window) = Self::get_focused_kitty_window(windows) {
-                let env = window
-                    .env
-                    .into_iter()
-                    .chain(iter::once(("SHLVL".into(), "1".into())));
-
-                Self::run_kitty_intsance(window.cwd.to_str(), Some(env))
-            } else {
-                Err(io::Error::new(io::ErrorKind::Other, ""))
-            }
+            Self::find_kitty_focused_window(windows).ok_or(io::Error::new(
+                io::ErrorKind::NotFound,
+                "No focused kitty window",
+            ))
         } else {
-            Err(io::Error::new(io::ErrorKind::Other, ""))
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Focused niri window is not kitty",
+            ))
         }
     }
 
@@ -181,7 +209,7 @@ impl Launcher {
         )
     }
 
-    fn get_focused_kitty_window(
+    fn find_kitty_focused_window(
         windows: Vec<kitty::OsWindow>,
     ) -> Option<kitty::Window> {
         for window in windows {
