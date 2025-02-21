@@ -53,6 +53,12 @@ pub struct Launcher {
     /// Launching tool will be run with default cwd withing default environment
     #[arg(short, long, default_value = "false")]
     fresh: bool,
+
+    /// Optional niri window id to base window
+    ///
+    /// By default this uses focused window
+    #[arg(short, long)]
+    window: Option<u64>,
 }
 
 /// The list of supported commands
@@ -192,9 +198,10 @@ impl Launcher {
         &self,
         socket: &mut MultiSocket,
     ) -> io::Result<kitty::Window> {
-        let window = Self::get_focused_window(&socket).ok_or(
-            io::Error::new(io::ErrorKind::NotFound, "No focused niri window"),
-        )?;
+        let window = self.get_base_window(&socket).ok_or(io::Error::new(
+            io::ErrorKind::NotFound,
+            "No focused niri window",
+        ))?;
         let class = window.app_id.ok_or(io::Error::new(
             io::ErrorKind::NotFound,
             "Focused niri window does not have class",
@@ -292,8 +299,26 @@ impl Launcher {
         None
     }
 
-    fn get_focused_window(socket: &MultiSocket) -> Option<niri_ipc::Window> {
-        if let Response::FocusedWindow(window) =
+    fn get_base_window(
+        &self,
+        socket: &MultiSocket,
+    ) -> Option<niri_ipc::Window> {
+        if let Some(id) = self.window {
+            if let Response::Windows(windows) =
+                socket.send(Request::Windows).unwrap().0.unwrap()
+            {
+                let mut res = None;
+                for window in windows.into_iter() {
+                    if window.id == id {
+                        res = Some(window);
+                        break;
+                    }
+                }
+                res
+            } else {
+                panic!("Unexpected response to Windows")
+            }
+        } else if let Response::FocusedWindow(window) =
             socket.send(Request::FocusedWindow).unwrap().0.unwrap()
         {
             window
