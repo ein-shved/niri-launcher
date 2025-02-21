@@ -13,12 +13,10 @@ pub use clap::{Parser, ValueEnum};
 use niri_ipc::{Request, Response};
 use niri_multi_socket::MultiSocket;
 use regex;
+use std::ffi::OsString;
 use std::{
-    ffi::{OsStr, OsString},
-    fmt::Display,
-    io, iter,
-    os::unix::process::CommandExt,
-    path::{Path, PathBuf},
+    collections::HashMap, io, iter,
+    os::unix::process::CommandExt, path::PathBuf,
 };
 
 mod kitty;
@@ -93,6 +91,12 @@ pub enum Command {
     /// window) - the newly running window will inherit this environment (e.g. cwd).
     #[command(about, long_about)]
     Vim,
+}
+
+#[derive(Default)]
+struct LaunchingData {
+    pub env: HashMap<String, String>,
+    pub cwd: Option<String>,
 }
 
 impl Launcher {
@@ -182,15 +186,20 @@ impl Launcher {
             .into_iter()
             .chain(iter::once(("SHLVL".into(), "1".into())));
 
-        Self::run_kitty_intsance(window.cwd.to_str(), Some(env))
+        Self::run_kitty_intsance(
+            LaunchingData::default()
+                .maybe_cwd(window.cwd.to_str())
+                .set_envs(env),
+        )
     }
 
     fn run_vim_from_kitty(&self, socket: &mut MultiSocket) -> io::Result<()> {
         let window = self.get_kitty_focused_window(socket)?;
 
         Self::run_vim_intsance(
-            window.cwd.to_str(),
-            Some(window.env.into_iter()),
+            LaunchingData::default()
+                .maybe_cwd(window.cwd.to_str())
+                .set_envs(window.env.into_iter()),
         )
     }
 
@@ -228,45 +237,32 @@ impl Launcher {
         }
     }
 
-    fn run_kitty_intsance(
-        workdir: Option<impl Into<String>>,
-        env: Option<impl Iterator<Item = (impl Display, impl Display)>>,
-    ) -> io::Result<()> {
+    fn run_kitty_intsance(data: LaunchingData) -> io::Result<()> {
         let mut proc = std::process::Command::new("kitty");
 
-        if let Some(env) = env {
-            env.fold(&mut proc, |proc, (name, val)| {
-                proc.arg("-o").arg(format!("env={name}={val}"))
-            });
-        };
+        data.env.into_iter().fold(&mut proc, |proc, (name, val)| {
+            proc.arg("-o").arg(format!("env={name}={val}"))
+        });
 
-        workdir.map(|workdir| {
-            proc.arg("-d").arg(format!("{}", workdir.into()));
+        data.cwd.map(|workdir| {
+            proc.arg("-d").arg(format!("{}", workdir));
         });
 
         Err(proc.exec())
     }
 
     fn run_kitty_fresh() -> io::Result<()> {
-        Self::run_kitty_intsance(
-            None as Option<String>,
-            None as Option<iter::Empty<(String, String)>>,
-        )
+        Self::run_kitty_intsance(LaunchingData::default())
     }
 
-    fn run_vim_intsance(
-        workdir: Option<impl AsRef<Path>>,
-        env: Option<
-            impl Iterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>,
-        >,
-    ) -> io::Result<()> {
+    fn run_vim_intsance(data: LaunchingData) -> io::Result<()> {
         let mut proc = std::process::Command::new("neovide");
 
-        if let Some(env) = env {
-            env.fold(&mut proc, |proc, (name, val)| proc.env(name, val));
-        };
+        data.env
+            .into_iter()
+            .fold(&mut proc, |proc, (name, val)| proc.env(name, val));
 
-        workdir.map(|workdir| {
+        data.cwd.map(|workdir| {
             proc.current_dir(workdir);
         });
 
@@ -274,10 +270,7 @@ impl Launcher {
     }
 
     fn run_vim_fresh() -> io::Result<()> {
-        Self::run_vim_intsance(
-            None as Option<String>,
-            None as Option<iter::Empty<(String, String)>>,
-        )
+        Self::run_vim_intsance(LaunchingData::default())
     }
 
     fn find_kitty_focused_window(
@@ -325,5 +318,68 @@ impl Launcher {
         } else {
             panic!("Unexpected response to FocusedWindow")
         }
+    }
+}
+
+impl LaunchingData {
+    pub fn clear_cwd(mut self) -> Self {
+        self.cwd = None;
+        self
+    }
+
+    pub fn set_cwd<S>(mut self, cwd: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
+    pub fn maybe_cwd<S>(mut self, cwd: Option<S>) -> Self
+    where
+        S: Into<String>,
+    {
+        self.cwd = cwd.map(S::into);
+        self
+    }
+
+    pub fn clear_env(mut self) -> Self {
+        self.env.clear();
+        self
+    }
+
+    pub fn add_env<K, V>(mut self, k: K, v: V) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.env.insert(k.into(), v.into());
+        self
+    }
+
+    pub fn set_env<K, V>(self, k: K, v: V) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.clear_env().add_env(k, v)
+    }
+
+    pub fn add_envs<I, K, V>(self, it: I) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+        I: Iterator<Item = (K, V)>,
+    {
+        it.fold(self, |s, (k, v)| s.add_env(k, v))
+    }
+
+    pub fn set_envs<I, K, V>(self, it: I) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+        I: Iterator<Item = (K, V)>,
+    {
+        self.clear_env().add_envs(it)
     }
 }
