@@ -14,8 +14,11 @@ use niri_ipc::{Request, Response};
 use niri_multi_socket::MultiSocket;
 use regex;
 use std::{
-    ffi::OsString, fmt::Display, io, iter, os::unix::process::CommandExt,
-    path::PathBuf,
+    ffi::{OsStr, OsString},
+    fmt::Display,
+    io, iter,
+    os::unix::process::CommandExt,
+    path::{Path, PathBuf},
 };
 
 mod kitty;
@@ -77,6 +80,13 @@ pub enum Command {
     /// purposes.
     #[command(about, long_about)]
     Env,
+
+    /// Run new vim instance.
+    ///
+    /// If current focused window have usable environment data (e.g. kitty
+    /// window) - the newly running window will inherit this environment (e.g. cwd).
+    #[command(about, long_about)]
+    Vim,
 }
 
 impl Launcher {
@@ -94,6 +104,7 @@ impl Launcher {
             }
             Command::Kitty => self.run_kitty(socket),
             Command::Env => self.print_env(socket),
+            Command::Vim => self.run_vim(socket),
         }
     }
 
@@ -106,7 +117,7 @@ impl Launcher {
             }
         }
         if res.is_err() {
-            res = self.run_from_kitty(&mut socket);
+            res = self.run_kitty_from_kitty(&mut socket);
         }
         if res.is_err() {
             res = Self::run_kitty_fresh()
@@ -122,6 +133,24 @@ impl Launcher {
             }
         }
         Ok(())
+    }
+
+    fn run_vim(&self, mut socket: MultiSocket) -> io::Result<()> {
+        let mut res = Err(io::Error::new(io::ErrorKind::Other, ""));
+
+        if res.is_err() {
+            if self.fresh {
+                res = Self::run_vim_fresh();
+            }
+        }
+        if res.is_err() {
+            res = self.run_vim_from_kitty(&mut socket);
+        }
+        if res.is_err() {
+            res = Self::run_vim_fresh()
+        }
+
+        res
     }
 
     fn get_socket(&self, pid: i32) -> io::Result<kitty::KittySocket> {
@@ -140,7 +169,7 @@ impl Launcher {
         kitty::KittySocket::connect(PathBuf::from(path.to_string()))
     }
 
-    fn run_from_kitty(&self, socket: &mut MultiSocket) -> io::Result<()> {
+    fn run_kitty_from_kitty(&self, socket: &mut MultiSocket) -> io::Result<()> {
         let window = self.get_kitty_focused_window(socket)?;
         let env = window
             .env
@@ -148,6 +177,15 @@ impl Launcher {
             .chain(iter::once(("SHLVL".into(), "1".into())));
 
         Self::run_kitty_intsance(window.cwd.to_str(), Some(env))
+    }
+
+    fn run_vim_from_kitty(&self, socket: &mut MultiSocket) -> io::Result<()> {
+        let window = self.get_kitty_focused_window(socket)?;
+
+        Self::run_vim_intsance(
+            window.cwd.to_str(),
+            Some(window.env.into_iter()),
+        )
     }
 
     fn get_kitty_focused_window(
@@ -204,6 +242,32 @@ impl Launcher {
 
     fn run_kitty_fresh() -> io::Result<()> {
         Self::run_kitty_intsance(
+            None as Option<String>,
+            None as Option<iter::Empty<(String, String)>>,
+        )
+    }
+
+    fn run_vim_intsance(
+        workdir: Option<impl AsRef<Path>>,
+        env: Option<
+            impl Iterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>,
+        >,
+    ) -> io::Result<()> {
+        let mut proc = std::process::Command::new("neovide");
+
+        if let Some(env) = env {
+            env.fold(&mut proc, |proc, (name, val)| proc.env(name, val));
+        };
+
+        workdir.map(|workdir| {
+            proc.current_dir(workdir);
+        });
+
+        Err(proc.exec())
+    }
+
+    fn run_vim_fresh() -> io::Result<()> {
+        Self::run_vim_intsance(
             None as Option<String>,
             None as Option<iter::Empty<(String, String)>>,
         )
