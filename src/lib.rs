@@ -15,8 +15,7 @@ use niri_multi_socket::MultiSocket;
 use regex;
 use std::ffi::OsString;
 use std::{
-    collections::HashMap, io, os::unix::process::CommandExt,
-    path::PathBuf,
+    collections::HashMap, io, os::unix::process::CommandExt, path::PathBuf,
 };
 
 mod kitty;
@@ -102,36 +101,19 @@ struct LaunchingData {
 impl Launcher {
     /// Run chosen subcommand
     pub fn run(self) -> io::Result<()> {
-        let socket = if let Some(path) = self.path.as_ref() {
+        let mut socket = if let Some(path) = self.path.as_ref() {
             MultiSocket::connect_to(path)
         } else {
             MultiSocket::connect().unwrap()
         };
-        match self.command {
-            Command::Test => {
-                socket.get_socket()?;
-                Ok(())
-            }
-            Command::Kitty => self.run_kitty(socket),
-            Command::Env => self.print_env(socket),
-            Command::Vim => self.run_vim(socket),
-        }
-    }
+        let runner: fn(LaunchingData) -> io::Result<()> = match self.command {
+            Command::Test => Self::run_test,
+            Command::Kitty => Self::run_kitty,
+            Command::Env => Self::print_env,
+            Command::Vim => Self::run_vim,
+        };
 
-    fn run_kitty(&self, mut socket: MultiSocket) -> io::Result<()> {
-        Self::run_kitty_intsance(self.get_launching_data(&mut socket))
-    }
-
-    fn print_env(&self, mut socket: MultiSocket) -> io::Result<()> {
-        let launching_data = self.get_launching_data(&mut socket);
-        for (name, val) in launching_data.env {
-            println!("{name}=\"{val}\"");
-        }
-        Ok(())
-    }
-
-    fn run_vim(&self, mut socket: MultiSocket) -> io::Result<()> {
-        Self::run_vim_intsance(self.get_launching_data(&mut socket))
+        runner(self.get_launching_data(&mut socket))
     }
 
     fn get_socket(&self, pid: i32) -> io::Result<kitty::KittySocket> {
@@ -201,7 +183,11 @@ impl Launcher {
             .set_envs(window.env.into_iter()))
     }
 
-    fn run_kitty_intsance(data: LaunchingData) -> io::Result<()> {
+    fn run_test(_: LaunchingData) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn run_kitty(data: LaunchingData) -> io::Result<()> {
         let mut proc = std::process::Command::new("kitty");
 
         data.env.into_iter().fold(&mut proc, |proc, (name, val)| {
@@ -215,7 +201,15 @@ impl Launcher {
         Err(proc.exec())
     }
 
-    fn run_vim_intsance(data: LaunchingData) -> io::Result<()> {
+    fn print_env(launching_data: LaunchingData) -> io::Result<()> {
+        for (name, val) in launching_data.env {
+            println!("{name}=\"{val}\"");
+        }
+        Ok(())
+    }
+
+
+    fn run_vim(data: LaunchingData) -> io::Result<()> {
         let mut proc = std::process::Command::new("neovide");
 
         data.env
