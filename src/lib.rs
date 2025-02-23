@@ -14,6 +14,10 @@ use niri_ipc::{Request, Response};
 use niri_multi_socket::MultiSocket;
 use regex;
 use std::ffi::OsString;
+use std::fs::{read_link, File};
+use std::io::BufRead;
+use std::str;
+use std::str::FromStr;
 use std::{
     collections::HashMap, io, os::unix::process::CommandExt, path::PathBuf,
 };
@@ -146,6 +150,8 @@ impl Launcher {
         ))?;
         if class == "kitty" {
             self.get_launching_data_from_kitty(window.pid)
+        } else if class == "neovide" {
+            self.get_launching_data_from_vim(window.pid)
         } else {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -183,6 +189,40 @@ impl Launcher {
             .set_envs(window.env.into_iter()))
     }
 
+    fn get_launching_data_from_vim(
+        &self,
+        pid: Option<i32>,
+    ) -> io::Result<LaunchingData> {
+        let pid = pid.ok_or(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Focused niri window does not have pid",
+        ))?;
+        let environ = File::open(format!("/proc/{pid}/environ"))?;
+        let lines = io::BufReader::new(environ).split(0x0);
+        let launching_data =
+            lines.fold(LaunchingData::default(), |launching_data, line| {
+                if let Ok(line) = line {
+                    if let Ok(line) = str::from_utf8(&line) {
+                        if let Some((k, v)) = line.split_once("=") {
+                            launching_data.add_env(k, v)
+                        } else {
+                            launching_data
+                        }
+                    } else {
+                        launching_data
+                    }
+                } else {
+                    launching_data
+                }
+            });
+
+        let Ok(cwd) = PathBuf::from_str(&format!("/proc/{pid}/cwd"));
+        let cwd = read_link(&cwd)
+            .ok()
+            .map(|cwd| String::from(cwd.to_str().unwrap()));
+        Ok(launching_data.maybe_cwd(cwd))
+    }
+
     fn run_test(_: LaunchingData) -> io::Result<()> {
         Ok(())
     }
@@ -207,7 +247,6 @@ impl Launcher {
         }
         Ok(())
     }
-
 
     fn run_vim(data: LaunchingData) -> io::Result<()> {
         let mut proc = std::process::Command::new("neovide");
