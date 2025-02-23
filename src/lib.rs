@@ -15,8 +15,8 @@ use niri_multi_socket::MultiSocket;
 use regex;
 use std::ffi::OsString;
 use std::{
-    collections::HashMap, io, iter,
-    os::unix::process::CommandExt, path::PathBuf,
+    collections::HashMap, io, os::unix::process::CommandExt,
+    path::PathBuf,
 };
 
 mod kitty;
@@ -119,48 +119,19 @@ impl Launcher {
     }
 
     fn run_kitty(&self, mut socket: MultiSocket) -> io::Result<()> {
-        let mut res = Err(io::Error::new(io::ErrorKind::Other, ""));
-
-        if res.is_err() {
-            if self.fresh {
-                res = Self::run_kitty_fresh();
-            }
-        }
-        if res.is_err() {
-            res = self.run_kitty_from_kitty(&mut socket);
-        }
-        if res.is_err() {
-            res = Self::run_kitty_fresh()
-        }
-
-        res
+        Self::run_kitty_intsance(self.get_launching_data(&mut socket))
     }
 
     fn print_env(&self, mut socket: MultiSocket) -> io::Result<()> {
-        if let Ok(window) = self.get_kitty_focused_window(&mut socket) {
-            for (name, val) in window.env {
-                println!("{name}=\"{val}\"");
-            }
+        let launching_data = self.get_launching_data(&mut socket);
+        for (name, val) in launching_data.env {
+            println!("{name}=\"{val}\"");
         }
         Ok(())
     }
 
     fn run_vim(&self, mut socket: MultiSocket) -> io::Result<()> {
-        let mut res = Err(io::Error::new(io::ErrorKind::Other, ""));
-
-        if res.is_err() {
-            if self.fresh {
-                res = Self::run_vim_fresh();
-            }
-        }
-        if res.is_err() {
-            res = self.run_vim_from_kitty(&mut socket);
-        }
-        if res.is_err() {
-            res = Self::run_vim_fresh()
-        }
-
-        res
+        Self::run_vim_intsance(self.get_launching_data(&mut socket))
     }
 
     fn get_socket(&self, pid: i32) -> io::Result<kitty::KittySocket> {
@@ -179,34 +150,10 @@ impl Launcher {
         kitty::KittySocket::connect(PathBuf::from(path.to_string()))
     }
 
-    fn run_kitty_from_kitty(&self, socket: &mut MultiSocket) -> io::Result<()> {
-        let window = self.get_kitty_focused_window(socket)?;
-        let env = window
-            .env
-            .into_iter()
-            .chain(iter::once(("SHLVL".into(), "1".into())));
-
-        Self::run_kitty_intsance(
-            LaunchingData::default()
-                .maybe_cwd(window.cwd.to_str())
-                .set_envs(env),
-        )
-    }
-
-    fn run_vim_from_kitty(&self, socket: &mut MultiSocket) -> io::Result<()> {
-        let window = self.get_kitty_focused_window(socket)?;
-
-        Self::run_vim_intsance(
-            LaunchingData::default()
-                .maybe_cwd(window.cwd.to_str())
-                .set_envs(window.env.into_iter()),
-        )
-    }
-
-    fn get_kitty_focused_window(
+    fn get_launching_data_no_default(
         &self,
         socket: &mut MultiSocket,
-    ) -> io::Result<kitty::Window> {
+    ) -> io::Result<LaunchingData> {
         let window = self.get_base_window(&socket).ok_or(io::Error::new(
             io::ErrorKind::NotFound,
             "No focused niri window",
@@ -216,25 +163,42 @@ impl Launcher {
             "Focused niri window does not have class",
         ))?;
         if class == "kitty" {
-            let pid = window.pid.ok_or(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Focused niri window does not have pid",
-            ))?;
-            let mut socket = self.get_socket(pid)?;
-            let r = kitty::Command::Ls(kitty::Ls::default());
-            let r = socket.request(r)?;
-            let windows: Vec<kitty::OsWindow> =
-                serde_json::from_value(r).unwrap();
-            Self::find_kitty_focused_window(windows).ok_or(io::Error::new(
-                io::ErrorKind::NotFound,
-                "No focused kitty window",
-            ))
+            self.get_launching_data_from_kitty(window.pid)
         } else {
             Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Focused niri window is not kitty",
+                io::ErrorKind::Unsupported,
+                format!("Can not get launching data from {class}"),
             ))
         }
+    }
+
+    fn get_launching_data(&self, socket: &mut MultiSocket) -> LaunchingData {
+        if self.fresh {
+            LaunchingData::default()
+        } else {
+            self.get_launching_data_no_default(socket)
+                .unwrap_or(LaunchingData::default())
+        }
+    }
+
+    fn get_launching_data_from_kitty(
+        &self,
+        pid: Option<i32>,
+    ) -> io::Result<LaunchingData> {
+        let pid = pid.ok_or(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Focused niri window does not have pid",
+        ))?;
+        let mut socket = self.get_socket(pid)?;
+        let r = kitty::Command::Ls(kitty::Ls::default());
+        let r = socket.request(r)?;
+        let windows: Vec<kitty::OsWindow> = serde_json::from_value(r).unwrap();
+        let window = Self::find_kitty_focused_window(windows).ok_or(
+            io::Error::new(io::ErrorKind::NotFound, "No focused kitty window"),
+        )?;
+        Ok(LaunchingData::default()
+            .maybe_cwd(window.cwd.to_str())
+            .set_envs(window.env.into_iter()))
     }
 
     fn run_kitty_intsance(data: LaunchingData) -> io::Result<()> {
@@ -251,10 +215,6 @@ impl Launcher {
         Err(proc.exec())
     }
 
-    fn run_kitty_fresh() -> io::Result<()> {
-        Self::run_kitty_intsance(LaunchingData::default())
-    }
-
     fn run_vim_intsance(data: LaunchingData) -> io::Result<()> {
         let mut proc = std::process::Command::new("neovide");
 
@@ -267,10 +227,6 @@ impl Launcher {
         });
 
         Err(proc.exec())
-    }
-
-    fn run_vim_fresh() -> io::Result<()> {
-        Self::run_vim_intsance(LaunchingData::default())
     }
 
     fn find_kitty_focused_window(
