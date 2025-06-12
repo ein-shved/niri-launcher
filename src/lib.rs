@@ -10,8 +10,7 @@
 
 use clap::Subcommand;
 pub use clap::{Parser, ValueEnum};
-use niri_ipc::{Request, Response};
-use niri_multi_socket::MultiSocket;
+use niri_ipc::{Request, Response, socket::Socket};
 use regex;
 use std::ffi::OsString;
 use std::fs::{read_link, File};
@@ -23,7 +22,6 @@ use std::{
 };
 
 mod kitty;
-mod niri_multi_socket;
 
 /// Top-level arguments structure
 #[derive(Parser, Debug)]
@@ -106,9 +104,9 @@ impl Launcher {
     /// Run chosen subcommand
     pub fn run(self) -> io::Result<()> {
         let mut socket = if let Some(path) = self.path.as_ref() {
-            MultiSocket::connect_to(path)
+            Socket::connect_to(path)?
         } else {
-            MultiSocket::connect().unwrap()
+            Socket::connect()?
         };
         let runner: fn(LaunchingData) -> io::Result<()> = match self.command {
             Command::Test => Self::run_test,
@@ -138,9 +136,9 @@ impl Launcher {
 
     fn get_launching_data_no_default(
         &self,
-        socket: &mut MultiSocket,
+        socket: &mut Socket,
     ) -> io::Result<LaunchingData> {
-        let window = self.get_base_window(&socket).ok_or(io::Error::new(
+        let window = self.get_base_window(socket).ok_or(io::Error::new(
             io::ErrorKind::NotFound,
             "No focused niri window",
         ))?;
@@ -160,7 +158,7 @@ impl Launcher {
         }
     }
 
-    fn get_launching_data(&self, socket: &mut MultiSocket) -> LaunchingData {
+    fn get_launching_data(&self, socket: &mut Socket) -> LaunchingData {
         if self.fresh {
             LaunchingData::default()
         } else {
@@ -283,11 +281,11 @@ impl Launcher {
 
     fn get_base_window(
         &self,
-        socket: &MultiSocket,
+        socket: &mut Socket,
     ) -> Option<niri_ipc::Window> {
         if let Some(id) = self.window {
             if let Response::Windows(windows) =
-                socket.send(Request::Windows).unwrap().0.unwrap()
+                socket.send(Request::Windows).unwrap().unwrap()
             {
                 let mut res = None;
                 for window in windows.into_iter() {
@@ -301,7 +299,7 @@ impl Launcher {
                 panic!("Unexpected response to Windows")
             }
         } else if let Response::FocusedWindow(window) =
-            socket.send(Request::FocusedWindow).unwrap().0.unwrap()
+            socket.send(Request::FocusedWindow).unwrap().unwrap()
         {
             window
         } else {

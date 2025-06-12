@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.23", features = ["derive"] }
-niri-ipc = "25.1.0"
+niri-ipc = "25.5.1"
 regex = "1.11.1"
 
 serde = { version = "1.0.217", features = ["derive"] }
