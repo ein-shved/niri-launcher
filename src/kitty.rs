@@ -165,6 +165,14 @@ pub struct Window {
     pub cmdline: Vec<String>,
     pub cwd: PathBuf,
     pub env: std::collections::HashMap<String, String>,
+    pub foreground_processes: Vec<ForegroundProcess>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ForegroundProcess {
+    pub cmdline: Vec<String>,
+    pub cwd: PathBuf,
+    pub pid: u32,
 }
 
 impl From<Command> for CommandPacked {

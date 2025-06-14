@@ -100,6 +100,7 @@ pub enum Command {
 struct LaunchingData {
     pub env: HashMap<String, String>,
     pub cwd: Option<String>,
+    pub remote: Option<Vec<String>>,
 }
 
 impl Launcher {
@@ -186,7 +187,27 @@ impl Launcher {
         )?;
         Ok(LaunchingData::default()
             .maybe_cwd(window.cwd.to_str())
-            .set_envs(window.env.into_iter()))
+            .set_envs(window.env.into_iter())
+            .set_remote(Self::get_remote_from_kitty(
+                window.foreground_processes,
+            )))
+    }
+
+    fn get_remote_from_kitty(
+        processes: Vec<kitty::ForegroundProcess>,
+    ) -> Option<Vec<String>> {
+        processes.into_iter().rev().find_map(|mut proc| {
+            let first = proc.cmdline.get(0).map_or("", String::as_str);
+            let second = proc.cmdline.get(1).map_or("", String::as_str);
+
+            if first == "ssh" {
+                Some(proc.cmdline.drain(1..).collect())
+            } else if first == "kitty" && second == "ssh" {
+                Some(proc.cmdline.drain(2..).collect())
+            } else {
+                None
+            }
+        })
     }
 
     fn get_launching_data_from_vim(
@@ -236,6 +257,13 @@ impl Launcher {
 
         data.cwd.map(|workdir| {
             proc.arg("-d").arg(format!("{}", workdir));
+        });
+
+        data.remote.map(|remote| {
+            proc.arg("kitten").arg("ssh");
+            for arg in remote {
+                proc.arg(arg);
+            }
         });
 
         Err(proc.exec())
@@ -370,5 +398,10 @@ impl LaunchingData {
         I: Iterator<Item = (K, V)>,
     {
         self.clear_env().add_envs(it)
+    }
+
+    pub fn set_remote(mut self, remote: Option<Vec<String>>) -> Self {
+        self.remote = remote;
+        self
     }
 }
