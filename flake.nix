@@ -3,6 +3,8 @@
     Simple utility to smartly launch different instruments withing niri
   '';
 
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+
   outputs =
     { nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (
